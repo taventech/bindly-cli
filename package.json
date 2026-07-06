@@ -1,0 +1,28 @@
+{
+  "name": "bindly-cli",
+  "version": "0.1.0",
+  "description": "Command-line tool for Bindly. Start intake sessions and submit to Hedge from your terminal.",
+  "type": "module",
+  "bin": { "bindly": "dist/index.js" },
+  "files": ["dist", "README.md", "CHANGELOG.md"],
+  "scripts": {
+    "build": "tsup",
+    "prepublishOnly": "tsup"
+  },
+  "engines": { "node": ">=18" },
+  "license": "MIT",
+  "author": "Bindly",
+  "homepage": "https://github.com/taventech/bindly-cli#readme",
+  "repository": { "type": "git", "url": "git+https://github.com/taventech/bindly-cli.git" },
+  "bugs": { "url": "https://github.com/taventech/bindly-cli/issues" },
+  "keywords": ["bindly", "insurance", "intake", "cli", "hedge", "submissions"],
+  "publishConfig": { "access": "public" },
+  "dependencies": {
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "tsup": "^8",
+    "typescript": "^5",
+    "@types/node": "^22"
+  }
+}
