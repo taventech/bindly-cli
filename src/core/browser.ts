@@ -10,6 +10,6 @@ export function openBrowser(url: string): void {
     child.on("error", () => {});
     child.unref();
   } catch {
-    /* headless — the printed URL is the fallback */
+    /* headless; the printed URL is the fallback */
   }
 }

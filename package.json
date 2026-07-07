@@ -1,6 +1,6 @@
 {
   "name": "bindly-cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Command-line tool for Bindly. Start intake sessions and submit to Hedge from your terminal.",
   "type": "module",
   "bin": { "bindly": "dist/index.js" },

@@ -23,7 +23,7 @@ export interface Ctx {
 }
 
 // Auth resolves to EITHER a stored org API key (login --api-key) or the
-// device/browser OAuth token — whichever is present. The engine /org routes
+// device/browser OAuth token, whichever is present. The engine /org routes
 // accept both.
 export function makeCtx(opts: { json?: boolean }): Ctx {
   const env = resolveEnv();
