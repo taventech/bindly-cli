@@ -8,7 +8,7 @@ const program = new Command();
 program
   .name("bindly")
   .description("Start Bindly intake sessions and submit to Hedge from your terminal.")
-  .version("0.1.0")
+  .version("0.2.0")
   .option("--json", "output raw JSON (for scripting)");
 
 registerAuth(program);

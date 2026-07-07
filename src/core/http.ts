@@ -1,3 +1,4 @@
+import { writeFileSync } from "node:fs";
 import { clearToken, loadToken, saveToken, type CliConfig, type StoredToken } from "./config.js";
 import { refresh } from "./oauth.js";
 
@@ -18,9 +19,9 @@ export interface ClientOptions {
 // Returns a valid bearer, refreshing (and persisting) if within 60s of expiry.
 async function bearer(cfg: CliConfig): Promise<string> {
   const tok = loadToken(cfg);
-  if (!tok) throw new ApiError(401, "Not signed in — run `login` first");
+  if (!tok) throw new ApiError(401, "Not signed in. Run `login` first");
   if (tok.expires_at - 60 > Math.floor(Date.now() / 1000)) return tok.access_token;
-  if (!tok.refresh_token) throw new ApiError(401, "Session expired — run `login` again");
+  if (!tok.refresh_token) throw new ApiError(401, "Session expired. Run `login` again");
   try {
     const r = await refresh(tok.token_endpoint, tok.client_id, tok.refresh_token);
     const updated: StoredToken = {
@@ -34,7 +35,7 @@ async function bearer(cfg: CliConfig): Promise<string> {
     return updated.access_token;
   } catch {
     clearToken(cfg);
-    throw new ApiError(401, "Session expired — run `login` again");
+    throw new ApiError(401, "Session expired. Run `login` again");
   }
 }
 
@@ -78,7 +79,7 @@ export async function apiRequest<T = unknown>(
 }
 
 // Multipart upload (fetch sets the boundary; JSON path can't). Same auth as
-// apiRequest — bearer (refreshing) or the static api key header.
+// apiRequest: bearer (refreshing) or the static api key header.
 export async function multipartRequest<T = unknown>(
   opts: ClientOptions,
   method: string,
@@ -91,12 +92,53 @@ export async function multipartRequest<T = unknown>(
   else headers.Authorization = `Bearer ${await bearer(opts.cfg)}`;
   const res = await fetch(url, { method, headers, body: form });
   const text = await res.text();
-  let parsed: unknown = text ? JSON.parse(text) : undefined;
+  let parsed: unknown = undefined;
+  if (text) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = text; // HTML error pages (502s from a proxy) are not JSON
+    }
+  }
   if (!res.ok) {
     const detail =
       (parsed && typeof parsed === "object" && "detail" in parsed && (parsed as any).detail) ||
-      `Upload failed (${res.status})`;
+      (typeof parsed === "string" && parsed.trim() ? parsed.trim() : `Upload failed (${res.status})`);
     throw new ApiError(res.status, String(detail));
   }
   return parsed as T;
+}
+
+// Binary download with the same auth as apiRequest. Writes the response body
+// to outPath and returns it. Non-2xx responses throw ApiError with the parsed
+// detail (JSON `detail`/`error` or raw text; HTML error pages do not crash).
+export async function downloadRequest(
+  opts: ClientOptions,
+  method: string,
+  path: string,
+  outPath: string,
+): Promise<string> {
+  const url = opts.apiBase.replace(/\/$/, "") + path;
+  const headers: Record<string, string> = {};
+  if (opts.apiKey) headers[opts.apiKeyHeader ?? "X-Api-Key"] = opts.apiKey;
+  else headers.Authorization = `Bearer ${await bearer(opts.cfg)}`;
+  const res = await fetch(url, { method, headers });
+  if (!res.ok) {
+    const text = await res.text();
+    let parsed: unknown = undefined;
+    if (text) {
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = text; // HTML error pages (502s from a proxy) are not JSON
+      }
+    }
+    const detail =
+      (parsed && typeof parsed === "object" && "detail" in parsed && (parsed as { detail?: unknown }).detail) ||
+      (parsed && typeof parsed === "object" && "error" in parsed && (parsed as { error?: unknown }).error) ||
+      (typeof parsed === "string" && parsed.trim() ? parsed.trim() : `Download failed (${res.status})`);
+    throw new ApiError(res.status, String(detail));
+  }
+  writeFileSync(outPath, Buffer.from(await res.arrayBuffer()));
+  return outPath;
 }
