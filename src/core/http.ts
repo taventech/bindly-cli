@@ -8,6 +8,41 @@ export class ApiError extends Error {
   }
 }
 
+// Renders an error `detail` value readably. FastAPI validation errors arrive
+// as detail: [{loc, msg, type}, ...]; plain strings pass through; anything
+// else is JSON-stringified rather than "[object Object]".
+function renderDetail(detail: unknown): string {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((d) => {
+        if (d && typeof d === "object" && "msg" in d) {
+          const item = d as { loc?: unknown; msg?: unknown };
+          const loc = Array.isArray(item.loc)
+            ? item.loc.filter((p) => p !== "body" && p !== "query" && p !== "path").join(".")
+            : "";
+          return loc ? `${loc}: ${item.msg}` : String(item.msg);
+        }
+        return typeof d === "string" ? d : JSON.stringify(d);
+      })
+      .join("; ");
+  }
+  if (detail != null && typeof detail === "object") return JSON.stringify(detail);
+  return String(detail);
+}
+
+// Best readable message for a non-2xx body: JSON `detail`/`error` first, then
+// raw text (HTML proxy pages), then a status-code fallback.
+function errorDetail(parsed: unknown, status: number, fallback: string): string {
+  if (parsed && typeof parsed === "object") {
+    const obj = parsed as Record<string, unknown>;
+    if (obj.detail != null) return renderDetail(obj.detail);
+    if (obj.error != null) return renderDetail(obj.error);
+  }
+  if (typeof parsed === "string" && parsed.trim()) return parsed.trim();
+  return `${fallback} (${status})`;
+}
+
 export interface ClientOptions {
   cfg: CliConfig;
   apiBase: string; // e.g. https://api.hedgespecialty.com/api/v1
@@ -69,11 +104,7 @@ export async function apiRequest<T = unknown>(
     }
   }
   if (!res.ok) {
-    const detail =
-      (parsed && typeof parsed === "object" && "detail" in parsed && (parsed as { detail?: unknown }).detail) ||
-      (parsed && typeof parsed === "object" && "error" in parsed && (parsed as { error?: unknown }).error) ||
-      (typeof parsed === "string" ? parsed : `Request failed (${res.status})`);
-    throw new ApiError(res.status, String(detail));
+    throw new ApiError(res.status, errorDetail(parsed, res.status, "Request failed"));
   }
   return parsed as T;
 }
@@ -101,10 +132,7 @@ export async function multipartRequest<T = unknown>(
     }
   }
   if (!res.ok) {
-    const detail =
-      (parsed && typeof parsed === "object" && "detail" in parsed && (parsed as any).detail) ||
-      (typeof parsed === "string" && parsed.trim() ? parsed.trim() : `Upload failed (${res.status})`);
-    throw new ApiError(res.status, String(detail));
+    throw new ApiError(res.status, errorDetail(parsed, res.status, "Upload failed"));
   }
   return parsed as T;
 }
@@ -133,11 +161,7 @@ export async function downloadRequest(
         parsed = text; // HTML error pages (502s from a proxy) are not JSON
       }
     }
-    const detail =
-      (parsed && typeof parsed === "object" && "detail" in parsed && (parsed as { detail?: unknown }).detail) ||
-      (parsed && typeof parsed === "object" && "error" in parsed && (parsed as { error?: unknown }).error) ||
-      (typeof parsed === "string" && parsed.trim() ? parsed.trim() : `Download failed (${res.status})`);
-    throw new ApiError(res.status, String(detail));
+    throw new ApiError(res.status, errorDetail(parsed, res.status, "Download failed"));
   }
   writeFileSync(outPath, Buffer.from(await res.arrayBuffer()));
   return outPath;

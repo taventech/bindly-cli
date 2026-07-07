@@ -4,26 +4,38 @@ import { basename, join } from "node:path";
 import { apiRequest, multipartRequest, downloadRequest, ApiError, table, kv, printJson } from "../core/index.js";
 import { makeCtx } from "../context.js";
 
-const EXTRACT_MAX_BYTES = 20 * 1024 * 1024; // engine caps extract uploads at 20MB
+const MAX_PDF_BYTES = 20 * 1024 * 1024; // engine caps PDF uploads (extract + documents) at 20MB
 
 function pdfForm(pdfPath: string, maxBytes?: number): FormData {
   const bytes = readFileSync(pdfPath);
   if (maxBytes && bytes.length > maxBytes) {
-    throw new Error(`${basename(pdfPath)} is larger than 20MB (the extract limit). Compress or split it first.`);
+    throw new Error(`${basename(pdfPath)} is larger than 20MB (the upload limit). Compress or split it first.`);
   }
   const form = new FormData();
   form.append("file", new Blob([bytes], { type: "application/pdf" }), basename(pdfPath));
   return form;
 }
 
-// One ask can arrive as a plain string or as {key, question, group}.
+// Answer asks arrive as {key, label, kind, options} (engine validate_turn);
+// session detail next_questions as {key, question, group}. Render the
+// human-readable field, falling back to the key; show select options.
 function askText(ask: unknown): string {
   if (typeof ask === "string") return ask;
   if (ask && typeof ask === "object") {
     const a = ask as Record<string, unknown>;
-    return String(a.question ?? a.key ?? JSON.stringify(ask));
+    const first = [a.label, a.question, a.key].find((v) => typeof v === "string" && v.trim());
+    const text = typeof first === "string" ? first : JSON.stringify(ask);
+    const options = Array.isArray(a.options) ? a.options.filter((o) => typeof o === "string") : [];
+    return options.length ? `${text} (${options.join(" / ")})` : text;
   }
   return String(ask);
+}
+
+// form_key becomes an output filename; keep it inside the target directory
+// and legal on Windows. Path separators and :*?"<>| become underscores.
+function safeFileName(key: string): string {
+  const cleaned = key.replace(/[/\\:*?"<>|]/g, "_").replace(/^\.+/, "").trim();
+  return cleaned || "form";
 }
 
 function truncate(s: unknown, max = 80): string {
@@ -124,10 +136,11 @@ export function registerSessions(program: Command): void {
     .description("Extract intake answers from a PDF (ACORD, dec page, supplement)")
     .action(async (sessionId, pdf) => {
       const ctx = makeCtx(program.opts());
-      const r = await multipartRequest<Record<string, any>>(ctx.client, "POST", `/org/sessions/${sessionId}/extract`, pdfForm(pdf, EXTRACT_MAX_BYTES));
+      const r = await multipartRequest<Record<string, any>>(ctx.client, "POST", `/org/sessions/${sessionId}/extract`, pdfForm(pdf, MAX_PDF_BYTES));
       if (ctx.json) return printJson(r);
       process.stdout.write(kv({ extracted_fields: r.extracted_count ?? 0 }) + "\n");
-      if (r.notes) process.stdout.write("\n" + r.notes + "\n");
+      const notes: string[] = Array.isArray(r.notes) ? r.notes.filter((n: unknown) => typeof n === "string") : r.notes ? [String(r.notes)] : [];
+      if (notes.length) process.stdout.write("\n" + notes.join("; ") + "\n");
     });
 
   session
@@ -168,20 +181,30 @@ export function registerSessions(program: Command): void {
         }
         keys = filled.map((f) => f.form_key);
       }
-      const written: string[] = [];
+      const written: { form_key: string; path: string }[] = [];
+      const failed: { form_key: string; error: string }[] = [];
       for (const key of keys) {
-        const out = join(opts.out, `${key}.pdf`);
+        const out = join(opts.out, `${safeFileName(key)}.pdf`);
         try {
-          written.push(await downloadRequest(ctx.client, "GET", `/org/sessions/${sessionId}/forms/${key}/pdf`, out));
+          await downloadRequest(ctx.client, "GET", `/org/sessions/${sessionId}/forms/${encodeURIComponent(key)}/pdf`, out);
+          written.push({ form_key: key, path: out });
         } catch (err) {
-          if (err instanceof ApiError && err.status === 404) {
-            throw new ApiError(404, `${err.message} (if ${key} has not been filled yet, run: bindly session fill ${sessionId})`);
+          let msg = err instanceof Error ? err.message : String(err);
+          // The engine 404s with "Form not filled" until fill has produced
+          // that form; only that case earns the hint (not "Session not found").
+          if (err instanceof ApiError && err.status === 404 && /not filled/i.test(msg)) {
+            msg += ` (run: bindly session fill ${sessionId} first)`;
           }
-          throw err;
+          failed.push({ form_key: key, error: msg });
         }
       }
-      if (ctx.json) return printJson({ written });
-      for (const path of written) process.stdout.write("Wrote " + path + "\n");
+      if (ctx.json) {
+        printJson({ written, failed });
+      } else {
+        for (const w of written) process.stdout.write("Wrote " + w.path + "\n");
+        for (const f of failed) process.stderr.write(`Failed ${f.form_key}: ${f.error}\n`);
+      }
+      if (failed.length) process.exit(1);
     });
 
   session
@@ -206,7 +229,7 @@ export function registerSessions(program: Command): void {
     .description("Attach a supporting document (loss runs, prior policy) to a session")
     .action(async (sessionId, pdf) => {
       const ctx = makeCtx(program.opts());
-      const r = await multipartRequest<Record<string, any>>(ctx.client, "POST", `/org/sessions/${sessionId}/documents`, pdfForm(pdf));
+      const r = await multipartRequest<Record<string, any>>(ctx.client, "POST", `/org/sessions/${sessionId}/documents`, pdfForm(pdf, MAX_PDF_BYTES));
       if (ctx.json) return printJson(r);
       process.stdout.write(kv({ document_id: r.document_id, name: r.name, extracted_fields: r.extracted_count ?? 0 }) + "\n");
     });
